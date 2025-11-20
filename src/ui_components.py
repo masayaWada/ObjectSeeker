@@ -88,6 +88,46 @@ class AuthFrame(ttk.LabelFrame):
             self.auth_status_label.configure(foreground="red")
 
 
+class TabbedSearchFrame(ttk.Frame):
+    """タブ付き検索フレーム"""
+
+    def __init__(self, parent, on_object_search: Callable, on_role_search: Callable, logger: Optional[Logger] = None):
+        """
+        タブ付き検索フレームを初期化
+
+        Args:
+            parent: 親ウィジェット
+            on_object_search: オブジェクト検索実行時のコールバック
+            on_role_search: ロール検索実行時のコールバック
+            logger: ロガーインスタンス
+        """
+        super().__init__(parent)
+        self.on_object_search = on_object_search
+        self.on_role_search = on_role_search
+        self.logger = logger or Logger()
+
+        self.setup_ui()
+
+    def setup_ui(self):
+        """UIをセットアップ"""
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(1, weight=1)
+
+        # タブの作成
+        self.notebook = ttk.Notebook(self)
+        self.notebook.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+
+        # オブジェクト検索タブ
+        self.object_search_frame = SearchFrame(
+            self.notebook, self.on_object_search, self.logger)
+        self.notebook.add(self.object_search_frame, text="オブジェクトID検索")
+
+        # ロール名検索タブ
+        self.role_search_frame = RoleSearchFrame(
+            self.notebook, self.on_role_search, self.logger)
+        self.notebook.add(self.role_search_frame, text="ロール名検索")
+
+
 class SearchFrame(ttk.LabelFrame):
     """検索フレーム"""
 
@@ -154,10 +194,66 @@ class SearchFrame(ttk.LabelFrame):
         }
 
 
+class RoleSearchFrame(ttk.LabelFrame):
+    """ロール名検索フレーム"""
+
+    def __init__(self, parent, on_search: Callable, logger: Optional[Logger] = None):
+        """
+        ロール名検索フレームを初期化
+
+        Args:
+            parent: 親ウィジェット
+            on_search: 検索実行時のコールバック
+            logger: ロガーインスタンス
+        """
+        super().__init__(parent, text="ロール名検索", padding="5")
+        self.on_search = on_search
+        self.logger = logger or Logger()
+
+        self.setup_ui()
+
+    def setup_ui(self):
+        """UIをセットアップ"""
+        self.columnconfigure(1, weight=1)
+
+        # 検索クエリ
+        ttk.Label(self, text="ロール名（日本語または英語）:").grid(
+            row=0, column=0, sticky=tk.W, padx=(0, 5))
+        self.search_query_var = tk.StringVar()
+        search_entry = ttk.Entry(
+            self, textvariable=self.search_query_var, width=50)
+        search_entry.grid(row=0, column=1, sticky=(tk.W, tk.E), padx=(0, 5))
+        search_entry.bind('<Return>', lambda e: self.execute_search())
+
+        # 検索ボタン
+        self.search_button = ttk.Button(
+            self, text="検索", command=self.execute_search)
+        self.search_button.grid(row=0, column=2, padx=(5, 0))
+
+        # 説明ラベル
+        info_label = ttk.Label(
+            self,
+            text="例: 「閲覧者」と入力すると「Reader」を取得できます",
+            foreground="gray"
+        )
+        info_label.grid(row=1, column=0, columnspan=3, pady=(5, 0), sticky=tk.W)
+
+    def execute_search(self):
+        """検索を実行"""
+        search_query = self.search_query_var.get().strip()
+
+        if not search_query:
+            messagebox.showerror("エラー", "検索クエリを入力してください。")
+            return
+
+        self.logger.info(f"ロール検索実行: {search_query}")
+        self.on_search(search_query)
+
+
 class ResultsFrame(ttk.LabelFrame):
     """検索結果フレーム"""
 
-    def __init__(self, parent, on_copy: Callable, logger: Optional[Logger] = None):
+    def __init__(self, parent, on_copy: Callable, logger: Optional[Logger] = None, result_type: str = "object"):
         """
         検索結果フレームを初期化
 
@@ -165,10 +261,12 @@ class ResultsFrame(ttk.LabelFrame):
             parent: 親ウィジェット
             on_copy: コピー実行時のコールバック
             logger: ロガーインスタンス
+            result_type: 結果タイプ（"object" または "role"）
         """
         super().__init__(parent, text="検索結果", padding="5")
         self.on_copy = on_copy
         self.logger = logger or Logger()
+        self.result_type = result_type
 
         self.setup_ui()
 
@@ -177,25 +275,64 @@ class ResultsFrame(ttk.LabelFrame):
         self.columnconfigure(0, weight=1)
         self.rowconfigure(0, weight=1)
 
-        # 結果表示用のTreeview
-        columns = ("名前", "表示名", "メール", "オブジェクトID", "タイプ")
+        # 結果タイプに応じて列を設定
+        columns = self._get_columns()
+
         self.results_tree = ttk.Treeview(
             self, columns=columns, show="headings", height=10)
 
         # 列の設定
-        for col in columns:
-            self.results_tree.heading(col, text=col)
-            self.results_tree.column(col, width=150, minwidth=100)
+        self._configure_columns(columns)
 
         # スクロールバー
-        scrollbar = ttk.Scrollbar(
+        self.scrollbar = ttk.Scrollbar(
             self, orient=tk.VERTICAL, command=self.results_tree.yview)
-        self.results_tree.configure(yscrollcommand=scrollbar.set)
+        self.results_tree.configure(yscrollcommand=self.scrollbar.set)
 
         # グリッド配置
         self.results_tree.grid(
             row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-        scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
+        self.scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
+
+        # ダブルクリックでコピー
+        self.results_tree.bind('<Double-1>', self.handle_copy)
+
+    def _get_columns(self):
+        """結果タイプに応じた列を取得"""
+        if self.result_type == "role":
+            return ("ロール名（英語）", "表示名（日本語）", "説明")
+        else:
+            return ("名前", "表示名", "メール", "オブジェクトID", "タイプ")
+
+    def _configure_columns(self, columns):
+        """列を設定"""
+        for col in columns:
+            self.results_tree.heading(col, text=col)
+            self.results_tree.column(col, width=150, minwidth=100)
+
+    def update_result_type(self, result_type: str):
+        """結果タイプを更新して列を再設定"""
+        if self.result_type == result_type:
+            return
+
+        self.result_type = result_type
+        columns = self._get_columns()
+
+        # 既存のTreeviewを削除
+        self.results_tree.destroy()
+
+        # 新しいTreeviewを作成
+        self.results_tree = ttk.Treeview(
+            self, columns=columns, show="headings", height=10)
+        self._configure_columns(columns)
+
+        # スクロールバーを再設定
+        self.results_tree.configure(yscrollcommand=self.scrollbar.set)
+        self.scrollbar.configure(command=self.results_tree.yview)
+
+        # グリッド配置
+        self.results_tree.grid(
+            row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
 
         # ダブルクリックでコピー
         self.results_tree.bind('<Double-1>', self.handle_copy)
@@ -210,13 +347,22 @@ class ResultsFrame(ttk.LabelFrame):
         self.clear_results()
 
         for item in results:
-            self.results_tree.insert('', 'end', values=(
-                item.get('name', ''),
-                item.get('display_name', ''),
-                item.get('email', ''),
-                item.get('object_id', ''),
-                item.get('type', '')
-            ))
+            if self.result_type == "role":
+                # ロール検索結果
+                self.results_tree.insert('', 'end', values=(
+                    item.get('role_name', ''),
+                    item.get('display_name', ''),
+                    item.get('description', '')
+                ))
+            else:
+                # オブジェクト検索結果
+                self.results_tree.insert('', 'end', values=(
+                    item.get('name', ''),
+                    item.get('display_name', ''),
+                    item.get('email', ''),
+                    item.get('object_id', ''),
+                    item.get('type', '')
+                ))
 
     def handle_copy(self, event):
         """コピー処理を実行"""
@@ -225,11 +371,19 @@ class ResultsFrame(ttk.LabelFrame):
             return
 
         item = self.results_tree.item(selection[0])
-        object_id = item['values'][3]  # オブジェクトID列
-
-        if object_id:
-            self.logger.info(f"オブジェクトIDをコピー: {object_id}")
-            self.on_copy(object_id)
+        
+        if self.result_type == "role":
+            # ロール名をコピー（最初の列）
+            role_name = item['values'][0] if item['values'] else ''
+            if role_name:
+                self.logger.info(f"ロール名をコピー: {role_name}")
+                self.on_copy(role_name)
+        else:
+            # オブジェクトIDをコピー（4番目の列）
+            object_id = item['values'][3] if len(item['values']) > 3 else ''
+            if object_id:
+                self.logger.info(f"オブジェクトIDをコピー: {object_id}")
+                self.on_copy(object_id)
 
 
 class StatusBar(ttk.Label):

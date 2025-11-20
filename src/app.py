@@ -12,7 +12,8 @@ from .config import Config
 from .logger import Logger
 from .azure_client import AzureClient, AzureCLIError
 from .graph_api import GraphAPISearcher, AzureGraphAPIError
-from .ui_components import AuthFrame, SearchFrame, ResultsFrame, StatusBar
+from .role_searcher import RoleSearcher
+from .ui_components import AuthFrame, TabbedSearchFrame, ResultsFrame, StatusBar
 from .ui_theme import ThemeManager, AccessibilityManager
 from .exceptions import ObjectSeekerError
 
@@ -34,6 +35,7 @@ class ObjectSeekerApp:
         # Azure関連のクライアント
         self.azure_client = AzureClient(self.logger)
         self.graph_searcher = GraphAPISearcher(self.azure_client, self.logger)
+        self.role_searcher = RoleSearcher(self.azure_client, self.logger)
 
         # UIテーマとアクセシビリティ
         self.theme_manager = ThemeManager(self.config, self.logger)
@@ -89,15 +91,15 @@ class ObjectSeekerApp:
         self.auth_frame.grid(
             row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
 
-        # 検索フレーム
-        self.search_frame = SearchFrame(
-            main_frame, self.search_objects, self.logger)
-        self.search_frame.grid(
+        # タブ付き検索フレーム
+        self.tabbed_search_frame = TabbedSearchFrame(
+            main_frame, self.search_objects, self.search_roles, self.logger)
+        self.tabbed_search_frame.grid(
             row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
 
-        # 結果フレーム
+        # 結果フレーム（オブジェクト検索用）
         self.results_frame = ResultsFrame(
-            main_frame, self.copy_object_id, self.logger)
+            main_frame, self.copy_result, self.logger, result_type="object")
         self.results_frame.grid(row=2, column=0, sticky=(
             tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
 
@@ -214,19 +216,46 @@ curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
 
         self.status_bar.set_status("検索中...")
 
+        # 結果フレームをオブジェクト検索用に設定
+        self.results_frame.update_result_type("object")
+        self.results_frame.configure(text="検索結果")
+
         # 検索結果をクリア
         self.results_frame.clear_results()
 
         # 別スレッドで検索を実行
         search_thread = threading.Thread(
-            target=self._search_thread,
+            target=self._search_object_thread,
             args=(search_type, query)
         )
         search_thread.daemon = True
         search_thread.start()
 
-    def _search_thread(self, search_type: str, query: str):
-        """検索処理（別スレッド）"""
+    def search_roles(self, query: str):
+        """ロール名検索を実行"""
+        if not self.azure_client.is_authenticated():
+            messagebox.showerror("エラー", "まず認証を完了してください。")
+            return
+
+        self.status_bar.set_status("ロール検索中...")
+
+        # 結果フレームをロール検索用に設定
+        self.results_frame.update_result_type("role")
+        self.results_frame.configure(text="検索結果")
+
+        # 検索結果をクリア
+        self.results_frame.clear_results()
+
+        # 別スレッドで検索を実行
+        search_thread = threading.Thread(
+            target=self._search_role_thread,
+            args=(query,)
+        )
+        search_thread.daemon = True
+        search_thread.start()
+
+    def _search_object_thread(self, search_type: str, query: str):
+        """オブジェクト検索処理（別スレッド）"""
         try:
             # 検索設定を取得
             search_config = self.config.get_search_config()
@@ -257,6 +286,26 @@ curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
             error_msg = f"予期しないエラー: {e}"
             self.root.after(0, lambda: self._search_error(error_msg))
 
+    def _search_role_thread(self, query: str):
+        """ロール検索処理（別スレッド）"""
+        try:
+            # 検索設定を取得
+            search_config = self.config.get_search_config()
+            max_results = search_config.get('max_results', 100)
+
+            # ロール検索を実行
+            results = self.role_searcher.search_roles(query, max_results)
+
+            # UI更新（メインスレッドで実行）
+            self.root.after(0, lambda: self._search_success(results))
+
+        except AzureCLIError as e:
+            error_msg = f"ロール検索エラー: {e}"
+            self.root.after(0, lambda: self._search_error(error_msg))
+        except Exception as e:
+            error_msg = f"予期しないエラー: {e}"
+            self.root.after(0, lambda: self._search_error(error_msg))
+
     def _search_success(self, results):
         """検索成功時の処理"""
         if not results:
@@ -273,15 +322,22 @@ curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
         self.status_bar.set_error(error_msg)
         messagebox.showerror("検索エラー", error_msg)
 
-    def copy_object_id(self, object_id: str):
-        """オブジェクトIDをクリップボードにコピー"""
+    def copy_result(self, value: str):
+        """検索結果をクリップボードにコピー（オブジェクトIDまたはロール名）"""
         try:
-            pyperclip.copy(object_id)
-            self.status_bar.set_success(f"オブジェクトIDをコピーしました: {object_id}")
-            messagebox.showinfo(
-                "コピー完了",
-                f"オブジェクトIDをクリップボードにコピーしました:\n{object_id}"
-            )
+            pyperclip.copy(value)
+            if self.results_frame.result_type == "role":
+                self.status_bar.set_success(f"ロール名をコピーしました: {value}")
+                messagebox.showinfo(
+                    "コピー完了",
+                    f"ロール名をクリップボードにコピーしました:\n{value}"
+                )
+            else:
+                self.status_bar.set_success(f"オブジェクトIDをコピーしました: {value}")
+                messagebox.showinfo(
+                    "コピー完了",
+                    f"オブジェクトIDをクリップボードにコピーしました:\n{value}"
+                )
         except Exception as e:
             self.logger.error(f"コピーエラー: {e}")
             self.status_bar.set_error(f"コピーエラー: {e}")
