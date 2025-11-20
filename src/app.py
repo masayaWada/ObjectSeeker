@@ -94,9 +94,14 @@ class ObjectSeekerApp:
         self.auth_frame.grid(
             row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
 
+        # ステータスバー（先に作成してTabbedSearchFrameに渡す）
+        self.status_bar = StatusBar(main_frame, self.logger)
+        self.status_bar.grid(
+            row=3, column=0, sticky=(tk.W, tk.E), pady=(10, 0))
+
         # タブ付き検索フレーム
         self.tabbed_search_frame = TabbedSearchFrame(
-            main_frame, self.search_objects, self.search_roles, self.azure_client, self.logger)
+            main_frame, self.search_objects, self.search_roles, self.azure_client, self.logger, self.status_bar)
         self.tabbed_search_frame.grid(
             row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
 
@@ -105,11 +110,6 @@ class ObjectSeekerApp:
             main_frame, self.copy_result, self.logger, result_type="object")
         self.results_frame.grid(row=2, column=0, sticky=(
             tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
-
-        # ステータスバー
-        self.status_bar = StatusBar(main_frame, self.logger)
-        self.status_bar.grid(
-            row=3, column=0, sticky=(tk.W, tk.E), pady=(10, 0))
 
         self.logger.info("UIのセットアップが完了しました")
 

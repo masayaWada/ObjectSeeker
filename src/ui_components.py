@@ -96,7 +96,7 @@ class AuthFrame(ttk.LabelFrame):
 class TabbedSearchFrame(ttk.Frame):
     """タブ付き検索フレーム"""
 
-    def __init__(self, parent, on_object_search: Callable, on_role_search: Callable, azure_client=None, logger: Optional[Logger] = None):
+    def __init__(self, parent, on_object_search: Callable, on_role_search: Callable, azure_client=None, logger: Optional[Logger] = None, status_bar=None):
         """
         タブ付き検索フレームを初期化
 
@@ -106,12 +106,14 @@ class TabbedSearchFrame(ttk.Frame):
             on_role_search: ロール検索実行時のコールバック
             azure_client: AzureClientインスタンス
             logger: ロガーインスタンス
+            status_bar: ステータスバーインスタンス
         """
         super().__init__(parent)
         self.on_object_search = on_object_search
         self.on_role_search = on_role_search
         self.azure_client = azure_client
         self.logger = logger or Logger()
+        self.status_bar = status_bar
 
         self.setup_ui()
 
@@ -131,7 +133,7 @@ class TabbedSearchFrame(ttk.Frame):
 
         # ロール名検索タブ
         self.role_search_frame = RoleSearchFrame(
-            self.notebook, self.on_role_search, self.azure_client, self.logger)
+            self.notebook, self.on_role_search, self.azure_client, self.logger, self.status_bar)
         self.notebook.add(self.role_search_frame, text="ロール名検索")
 
     def refresh_role_search_subscriptions(self):
@@ -209,7 +211,7 @@ class SearchFrame(ttk.LabelFrame):
 class RoleSearchFrame(ttk.LabelFrame):
     """ロール名検索フレーム"""
 
-    def __init__(self, parent, on_search: Callable, azure_client=None, logger: Optional[Logger] = None):
+    def __init__(self, parent, on_search: Callable, azure_client=None, logger: Optional[Logger] = None, status_bar=None):
         """
         ロール名検索フレームを初期化
 
@@ -218,13 +220,17 @@ class RoleSearchFrame(ttk.LabelFrame):
             on_search: 検索実行時のコールバック
             azure_client: AzureClientインスタンス
             logger: ロガーインスタンス
+            status_bar: ステータスバーインスタンス
         """
         super().__init__(parent, text="ロール名検索", padding="5")
         self.on_search = on_search
         self.azure_client = azure_client
         self.logger = logger or Logger()
+        self.status_bar = status_bar
         self.subscriptions = []
         self.resource_groups = []
+        self.all_subscription_names = []  # 全サブスクリプション名リスト（フィルタリング用）
+        self.all_resource_group_names = []  # 全リソースグループ名リスト（フィルタリング用）
 
         self.setup_ui()
 
@@ -239,11 +245,17 @@ class RoleSearchFrame(ttk.LabelFrame):
             row=row, column=0, sticky=tk.W, padx=(0, 5), pady=(0, 5))
         self.subscription_var = tk.StringVar()
         self.subscription_combo = ttk.Combobox(
-            self, textvariable=self.subscription_var, width=47, state="readonly")
-        self.subscription_combo.grid(row=row, column=1, sticky=(tk.W, tk.E), padx=(0, 5), pady=(0, 5))
-        self.subscription_combo.bind('<<ComboboxSelected>>', self._on_subscription_selected)
+            self, textvariable=self.subscription_var, width=47, state="normal")
+        self.subscription_combo.grid(row=row, column=1, sticky=(
+            tk.W, tk.E), padx=(0, 5), pady=(0, 5))
+        self.subscription_combo.bind(
+            '<<ComboboxSelected>>', self._on_subscription_selected)
+        self.subscription_combo.bind(
+            '<KeyRelease>', self._on_subscription_key_release)
+        self.subscription_combo.bind('<Return>', self._on_subscription_enter)
         self.subscription_combo['values'] = ['（すべて - 組み込みロールのみ）']
         self.subscription_combo.current(0)
+        self.all_subscription_names = ['（すべて - 組み込みロールのみ）']
 
         # リソースグループ選択
         row += 1
@@ -251,11 +263,17 @@ class RoleSearchFrame(ttk.LabelFrame):
             row=row, column=0, sticky=tk.W, padx=(0, 5), pady=(0, 5))
         self.resource_group_var = tk.StringVar()
         self.resource_group_combo = ttk.Combobox(
-            self, textvariable=self.resource_group_var, width=47, state="readonly")
-        self.resource_group_combo.grid(row=row, column=1, sticky=(tk.W, tk.E), padx=(0, 5), pady=(0, 5))
+            self, textvariable=self.resource_group_var, width=47, state="normal")
+        self.resource_group_combo.grid(row=row, column=1, sticky=(
+            tk.W, tk.E), padx=(0, 5), pady=(0, 5))
+        self.resource_group_combo.bind(
+            '<KeyRelease>', self._on_resource_group_key_release)
+        self.resource_group_combo.bind(
+            '<Return>', self._on_resource_group_enter)
         self.resource_group_combo['values'] = ['（すべて）']
         self.resource_group_combo.current(0)
         self.resource_group_combo.config(state="disabled")
+        self.all_resource_group_names = ['（すべて）']
 
         # 検索クエリ
         row += 1
@@ -264,7 +282,8 @@ class RoleSearchFrame(ttk.LabelFrame):
         self.search_query_var = tk.StringVar()
         search_entry = ttk.Entry(
             self, textvariable=self.search_query_var, width=50)
-        search_entry.grid(row=row, column=1, sticky=(tk.W, tk.E), padx=(0, 5), pady=(0, 5))
+        search_entry.grid(row=row, column=1, sticky=(
+            tk.W, tk.E), padx=(0, 5), pady=(0, 5))
         search_entry.bind('<Return>', lambda e: self.execute_search())
 
         # 検索ボタン
@@ -279,7 +298,8 @@ class RoleSearchFrame(ttk.LabelFrame):
             text="例: 「閲覧者」と入力すると「Reader」を取得できます。スコープを選択するとカスタムロールも検索できます。",
             foreground="gray"
         )
-        info_label.grid(row=row, column=0, columnspan=3, pady=(5, 0), sticky=tk.W)
+        info_label.grid(row=row, column=0, columnspan=3,
+                        pady=(5, 0), sticky=tk.W)
 
         # 認証状態が確認できたらサブスクリプション一覧を読み込む
         if self.azure_client and self.azure_client.is_authenticated():
@@ -298,6 +318,7 @@ class RoleSearchFrame(ttk.LabelFrame):
                 sub_id = sub.get('id', '')
                 if name and sub_id:
                     subscription_names.append(f"{name} ({sub_id})")
+            self.all_subscription_names = subscription_names  # 全リストを保持
             self.subscription_combo['values'] = subscription_names
             self.subscription_combo.current(0)
         except Exception as e:
@@ -306,9 +327,13 @@ class RoleSearchFrame(ttk.LabelFrame):
     def _on_subscription_selected(self, event=None):
         """サブスクリプション選択時の処理"""
         selected = self.subscription_var.get()
-        
+
+        # 選択されたらフィルタリングをリセット（全リストを表示）
+        self.subscription_combo['values'] = self.all_subscription_names
+
         if selected == '（すべて - 組み込みロールのみ）':
             self.resource_group_combo['values'] = ['（すべて）']
+            self.all_resource_group_names = ['（すべて）']
             self.resource_group_combo.current(0)
             self.resource_group_combo.config(state="disabled")
             return
@@ -326,21 +351,42 @@ class RoleSearchFrame(ttk.LabelFrame):
             return
 
         # リソースグループ一覧を読み込む
+        if self.status_bar:
+            self.status_bar.set_status("リソースグループ検索中…")
+            # UIを即座に更新（処理前にステータスバーを表示するため）
+            root = self.winfo_toplevel()
+            if root:
+                root.update_idletasks()
         try:
-            self.resource_groups = self.azure_client.get_resource_groups(subscription_id)
+            self.resource_groups = self.azure_client.get_resource_groups(
+                subscription_id)
             resource_group_names = ['（すべて）']
             for rg in self.resource_groups:
                 name = rg.get('name', '')
                 if name:
                     resource_group_names.append(name)
-            self.resource_group_combo['values'] = resource_group_names
+            self.all_resource_group_names = resource_group_names  # 全リストを保持
+            # 現在の入力値でフィルタリング
+            current_text = self.resource_group_var.get()
+            if current_text and current_text != '（すべて）':
+                filtered = [
+                    name for name in resource_group_names if current_text.upper() in name.upper()]
+                self.resource_group_combo['values'] = filtered if filtered else resource_group_names
+            else:
+                self.resource_group_combo['values'] = resource_group_names
             self.resource_group_combo.current(0)
-            self.resource_group_combo.config(state="readonly")
+            self.resource_group_combo.config(state="normal")
+            if self.status_bar:
+                self.status_bar.set_status(
+                    f"リソースグループ検索完了: {len(resource_group_names) - 1}件")
         except Exception as e:
             self.logger.error(f"リソースグループ一覧の読み込みエラー: {e}")
             self.resource_group_combo['values'] = ['（すべて）']
+            self.all_resource_group_names = ['（すべて）']
             self.resource_group_combo.current(0)
             self.resource_group_combo.config(state="disabled")
+            if self.status_bar:
+                self.status_bar.set_error(f"リソースグループ検索エラー: {e}")
 
     def get_scope(self) -> Optional[str]:
         """
@@ -350,7 +396,7 @@ class RoleSearchFrame(ttk.LabelFrame):
             スコープ文字列（例: /subscriptions/xxx/resourceGroups/yyy）。選択されていない場合はNone
         """
         selected_sub = self.subscription_var.get()
-        
+
         if selected_sub == '（すべて - 組み込みロールのみ）':
             return None
 
@@ -367,7 +413,7 @@ class RoleSearchFrame(ttk.LabelFrame):
             return None
 
         # リソースグループが選択されているか確認
-        selected_rg = self.resource_group_var.get()
+        selected_rg = self.resource_group_var.get().strip()
         if selected_rg and selected_rg != '（すべて）':
             # リソースグループのIDを取得
             for rg in self.resource_groups:
@@ -392,6 +438,94 @@ class RoleSearchFrame(ttk.LabelFrame):
         scope = self.get_scope()
         self.logger.info(f"ロール検索実行: query='{search_query}', scope='{scope}'")
         self.on_search(search_query, scope)
+
+    def _on_subscription_key_release(self, event=None):
+        """サブスクリプション入力時の処理（Enterキー以外では何もしない）"""
+        # KeyReleaseイベントでは何もしない（連続入力を可能にするため）
+        # Enterキーは別のイベントハンドラで処理
+        pass
+
+    def _on_subscription_enter(self, event=None):
+        """サブスクリプションでEnterキーが押されたときのフィルタリング処理"""
+        current_text = self.subscription_var.get()
+
+        # 空の場合は全リストを表示
+        if not current_text:
+            self.subscription_combo['values'] = self.all_subscription_names
+            # ドロップダウンを表示
+            self._show_subscription_dropdown()
+            return
+
+        # 部分一致でフィルタリング（大文字小文字を区別しない）
+        filtered = [name for name in self.all_subscription_names
+                    if current_text.upper() in name.upper()]
+
+        # フィルタリング結果がある場合は表示、ない場合は全リストを表示
+        if filtered:
+            self.subscription_combo['values'] = filtered
+        else:
+            self.subscription_combo['values'] = self.all_subscription_names
+
+        # ドロップダウンを表示
+        self._show_subscription_dropdown()
+        return "break"  # デフォルトの動作を防ぐ
+
+    def _show_subscription_dropdown(self):
+        """サブスクリプションのドロップダウンを表示"""
+        try:
+            self.subscription_combo.focus_set()
+            self.subscription_combo.after_idle(
+                lambda: self.subscription_combo.event_generate('<Down>'))
+        except:
+            pass
+
+    def _on_resource_group_key_release(self, event=None):
+        """リソースグループ入力時の処理（Enterキー以外では何もしない）"""
+        # disabled状態の場合は処理しない
+        if self.resource_group_combo.cget('state') == 'disabled':
+            return
+
+        # KeyReleaseイベントでは何もしない（連続入力を可能にするため）
+        # Enterキーは別のイベントハンドラで処理
+        pass
+
+    def _on_resource_group_enter(self, event=None):
+        """リソースグループでEnterキーが押されたときのフィルタリング処理"""
+        # disabled状態の場合は処理しない
+        if self.resource_group_combo.cget('state') == 'disabled':
+            return
+
+        current_text = self.resource_group_var.get()
+
+        # 空の場合は全リストを表示
+        if not current_text:
+            self.resource_group_combo['values'] = self.all_resource_group_names
+            # ドロップダウンを表示
+            self._show_resource_group_dropdown()
+            return
+
+        # 部分一致でフィルタリング（大文字小文字を区別しない）
+        filtered = [name for name in self.all_resource_group_names
+                    if current_text.upper() in name.upper()]
+
+        # フィルタリング結果がある場合は表示、ない場合は全リストを表示
+        if filtered:
+            self.resource_group_combo['values'] = filtered
+        else:
+            self.resource_group_combo['values'] = self.all_resource_group_names
+
+        # ドロップダウンを表示
+        self._show_resource_group_dropdown()
+        return "break"  # デフォルトの動作を防ぐ
+
+    def _show_resource_group_dropdown(self):
+        """リソースグループのドロップダウンを表示"""
+        try:
+            self.resource_group_combo.focus_set()
+            self.resource_group_combo.after_idle(
+                lambda: self.resource_group_combo.event_generate('<Down>'))
+        except:
+            pass
 
 
 class ResultsFrame(ttk.LabelFrame):
@@ -515,7 +649,7 @@ class ResultsFrame(ttk.LabelFrame):
             return
 
         item = self.results_tree.item(selection[0])
-        
+
         if self.result_type == "role":
             # ロール名をコピー（最初の列）
             role_name = item['values'][0] if item['values'] else ''
