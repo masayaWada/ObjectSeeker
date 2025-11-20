@@ -87,13 +87,16 @@ class ObjectSeekerApp:
         main_frame.rowconfigure(2, weight=1)
 
         # 認証フレーム
-        self.auth_frame = AuthFrame(main_frame, self.azure_client, self.logger)
+        self.auth_frame = AuthFrame(
+            main_frame, self.azure_client, 
+            on_auth_success=self._on_auth_success, 
+            logger=self.logger)
         self.auth_frame.grid(
             row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
 
         # タブ付き検索フレーム
         self.tabbed_search_frame = TabbedSearchFrame(
-            main_frame, self.search_objects, self.search_roles, self.logger)
+            main_frame, self.search_objects, self.search_roles, self.azure_client, self.logger)
         self.tabbed_search_frame.grid(
             row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
 
@@ -172,6 +175,10 @@ class ObjectSeekerApp:
             if self.auth_frame:
                 self.auth_frame.update_auth_status()
 
+            # ロール検索フレームのサブスクリプション一覧を更新
+            if self.tabbed_search_frame and self.azure_client.is_authenticated():
+                self.tabbed_search_frame.refresh_role_search_subscriptions()
+
             if self.azure_client.is_authenticated():
                 self.status_bar.set_success("Azure CLI認証が完了しています")
             else:
@@ -231,7 +238,7 @@ curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
         search_thread.daemon = True
         search_thread.start()
 
-    def search_roles(self, query: str):
+    def search_roles(self, query: str, scope: Optional[str] = None):
         """ロール名検索を実行"""
         if not self.azure_client.is_authenticated():
             messagebox.showerror("エラー", "まず認証を完了してください。")
@@ -249,7 +256,7 @@ curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
         # 別スレッドで検索を実行
         search_thread = threading.Thread(
             target=self._search_role_thread,
-            args=(query,)
+            args=(query, scope)
         )
         search_thread.daemon = True
         search_thread.start()
@@ -286,7 +293,7 @@ curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
             error_msg = f"予期しないエラー: {e}"
             self.root.after(0, lambda: self._search_error(error_msg))
 
-    def _search_role_thread(self, query: str):
+    def _search_role_thread(self, query: str, scope: Optional[str] = None):
         """ロール検索処理（別スレッド）"""
         try:
             # 検索設定を取得
@@ -294,7 +301,7 @@ curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
             max_results = search_config.get('max_results', 100)
 
             # ロール検索を実行
-            results = self.role_searcher.search_roles(query, max_results)
+            results = self.role_searcher.search_roles(query, max_results, scope)
 
             # UI更新（メインスレッドで実行）
             self.root.after(0, lambda: self._search_success(results))
@@ -305,6 +312,12 @@ curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
         except Exception as e:
             error_msg = f"予期しないエラー: {e}"
             self.root.after(0, lambda: self._search_error(error_msg))
+
+    def _on_auth_success(self):
+        """認証成功時の処理"""
+        # ロール検索フレームのサブスクリプション一覧を更新
+        if self.tabbed_search_frame:
+            self.tabbed_search_frame.refresh_role_search_subscriptions()
 
     def _search_success(self, results):
         """検索成功時の処理"""

@@ -12,17 +12,19 @@ from .exceptions import UIError
 class AuthFrame(ttk.LabelFrame):
     """認証フレーム"""
 
-    def __init__(self, parent, azure_client, logger: Optional[Logger] = None):
+    def __init__(self, parent, azure_client, on_auth_success: Optional[Callable] = None, logger: Optional[Logger] = None):
         """
         認証フレームを初期化
 
         Args:
             parent: 親ウィジェット
             azure_client: AzureClientインスタンス
+            on_auth_success: 認証成功時のコールバック
             logger: ロガーインスタンス
         """
         super().__init__(parent, text="Azure CLI認証", padding="5")
         self.azure_client = azure_client
+        self.on_auth_success = on_auth_success
         self.logger = logger or Logger()
 
         self.setup_ui()
@@ -67,6 +69,9 @@ class AuthFrame(ttk.LabelFrame):
         if success:
             self.update_auth_status()
             messagebox.showinfo("成功", "Azure CLI認証が完了しました。")
+            # 認証成功時のコールバックを呼び出す
+            if self.on_auth_success:
+                self.on_auth_success()
         else:
             self.auth_status_var.set("認証に失敗しました")
             self.auth_status_label.configure(foreground="red")
@@ -91,7 +96,7 @@ class AuthFrame(ttk.LabelFrame):
 class TabbedSearchFrame(ttk.Frame):
     """タブ付き検索フレーム"""
 
-    def __init__(self, parent, on_object_search: Callable, on_role_search: Callable, logger: Optional[Logger] = None):
+    def __init__(self, parent, on_object_search: Callable, on_role_search: Callable, azure_client=None, logger: Optional[Logger] = None):
         """
         タブ付き検索フレームを初期化
 
@@ -99,11 +104,13 @@ class TabbedSearchFrame(ttk.Frame):
             parent: 親ウィジェット
             on_object_search: オブジェクト検索実行時のコールバック
             on_role_search: ロール検索実行時のコールバック
+            azure_client: AzureClientインスタンス
             logger: ロガーインスタンス
         """
         super().__init__(parent)
         self.on_object_search = on_object_search
         self.on_role_search = on_role_search
+        self.azure_client = azure_client
         self.logger = logger or Logger()
 
         self.setup_ui()
@@ -124,8 +131,13 @@ class TabbedSearchFrame(ttk.Frame):
 
         # ロール名検索タブ
         self.role_search_frame = RoleSearchFrame(
-            self.notebook, self.on_role_search, self.logger)
+            self.notebook, self.on_role_search, self.azure_client, self.logger)
         self.notebook.add(self.role_search_frame, text="ロール名検索")
+
+    def refresh_role_search_subscriptions(self):
+        """ロール検索フレームのサブスクリプション一覧を更新"""
+        if self.role_search_frame:
+            self.role_search_frame._load_subscriptions()
 
 
 class SearchFrame(ttk.LabelFrame):
@@ -197,18 +209,22 @@ class SearchFrame(ttk.LabelFrame):
 class RoleSearchFrame(ttk.LabelFrame):
     """ロール名検索フレーム"""
 
-    def __init__(self, parent, on_search: Callable, logger: Optional[Logger] = None):
+    def __init__(self, parent, on_search: Callable, azure_client=None, logger: Optional[Logger] = None):
         """
         ロール名検索フレームを初期化
 
         Args:
             parent: 親ウィジェット
             on_search: 検索実行時のコールバック
+            azure_client: AzureClientインスタンス
             logger: ロガーインスタンス
         """
         super().__init__(parent, text="ロール名検索", padding="5")
         self.on_search = on_search
+        self.azure_client = azure_client
         self.logger = logger or Logger()
+        self.subscriptions = []
+        self.resource_groups = []
 
         self.setup_ui()
 
@@ -216,27 +232,154 @@ class RoleSearchFrame(ttk.LabelFrame):
         """UIをセットアップ"""
         self.columnconfigure(1, weight=1)
 
+        row = 0
+
+        # サブスクリプション選択
+        ttk.Label(self, text="サブスクリプション:").grid(
+            row=row, column=0, sticky=tk.W, padx=(0, 5), pady=(0, 5))
+        self.subscription_var = tk.StringVar()
+        self.subscription_combo = ttk.Combobox(
+            self, textvariable=self.subscription_var, width=47, state="readonly")
+        self.subscription_combo.grid(row=row, column=1, sticky=(tk.W, tk.E), padx=(0, 5), pady=(0, 5))
+        self.subscription_combo.bind('<<ComboboxSelected>>', self._on_subscription_selected)
+        self.subscription_combo['values'] = ['（すべて - 組み込みロールのみ）']
+        self.subscription_combo.current(0)
+
+        # リソースグループ選択
+        row += 1
+        ttk.Label(self, text="リソースグループ:").grid(
+            row=row, column=0, sticky=tk.W, padx=(0, 5), pady=(0, 5))
+        self.resource_group_var = tk.StringVar()
+        self.resource_group_combo = ttk.Combobox(
+            self, textvariable=self.resource_group_var, width=47, state="readonly")
+        self.resource_group_combo.grid(row=row, column=1, sticky=(tk.W, tk.E), padx=(0, 5), pady=(0, 5))
+        self.resource_group_combo['values'] = ['（すべて）']
+        self.resource_group_combo.current(0)
+        self.resource_group_combo.config(state="disabled")
+
         # 検索クエリ
+        row += 1
         ttk.Label(self, text="ロール名（日本語または英語）:").grid(
-            row=0, column=0, sticky=tk.W, padx=(0, 5))
+            row=row, column=0, sticky=tk.W, padx=(0, 5), pady=(0, 5))
         self.search_query_var = tk.StringVar()
         search_entry = ttk.Entry(
             self, textvariable=self.search_query_var, width=50)
-        search_entry.grid(row=0, column=1, sticky=(tk.W, tk.E), padx=(0, 5))
+        search_entry.grid(row=row, column=1, sticky=(tk.W, tk.E), padx=(0, 5), pady=(0, 5))
         search_entry.bind('<Return>', lambda e: self.execute_search())
 
         # 検索ボタン
         self.search_button = ttk.Button(
             self, text="検索", command=self.execute_search)
-        self.search_button.grid(row=0, column=2, padx=(5, 0))
+        self.search_button.grid(row=row, column=2, padx=(5, 0), pady=(0, 5))
 
         # 説明ラベル
+        row += 1
         info_label = ttk.Label(
             self,
-            text="例: 「閲覧者」と入力すると「Reader」を取得できます",
+            text="例: 「閲覧者」と入力すると「Reader」を取得できます。スコープを選択するとカスタムロールも検索できます。",
             foreground="gray"
         )
-        info_label.grid(row=1, column=0, columnspan=3, pady=(5, 0), sticky=tk.W)
+        info_label.grid(row=row, column=0, columnspan=3, pady=(5, 0), sticky=tk.W)
+
+        # 認証状態が確認できたらサブスクリプション一覧を読み込む
+        if self.azure_client and self.azure_client.is_authenticated():
+            self._load_subscriptions()
+
+    def _load_subscriptions(self):
+        """サブスクリプション一覧を読み込む"""
+        if not self.azure_client:
+            return
+
+        try:
+            self.subscriptions = self.azure_client.get_subscriptions()
+            subscription_names = ['（すべて - 組み込みロールのみ）']
+            for sub in self.subscriptions:
+                name = sub.get('name', '')
+                sub_id = sub.get('id', '')
+                if name and sub_id:
+                    subscription_names.append(f"{name} ({sub_id})")
+            self.subscription_combo['values'] = subscription_names
+            self.subscription_combo.current(0)
+        except Exception as e:
+            self.logger.error(f"サブスクリプション一覧の読み込みエラー: {e}")
+
+    def _on_subscription_selected(self, event=None):
+        """サブスクリプション選択時の処理"""
+        selected = self.subscription_var.get()
+        
+        if selected == '（すべて - 組み込みロールのみ）':
+            self.resource_group_combo['values'] = ['（すべて）']
+            self.resource_group_combo.current(0)
+            self.resource_group_combo.config(state="disabled")
+            return
+
+        # サブスクリプションIDを抽出
+        subscription_id = None
+        for sub in self.subscriptions:
+            name = sub.get('name', '')
+            sub_id = sub.get('id', '')
+            if f"{name} ({sub_id})" == selected:
+                subscription_id = sub_id
+                break
+
+        if not subscription_id:
+            return
+
+        # リソースグループ一覧を読み込む
+        try:
+            self.resource_groups = self.azure_client.get_resource_groups(subscription_id)
+            resource_group_names = ['（すべて）']
+            for rg in self.resource_groups:
+                name = rg.get('name', '')
+                if name:
+                    resource_group_names.append(name)
+            self.resource_group_combo['values'] = resource_group_names
+            self.resource_group_combo.current(0)
+            self.resource_group_combo.config(state="readonly")
+        except Exception as e:
+            self.logger.error(f"リソースグループ一覧の読み込みエラー: {e}")
+            self.resource_group_combo['values'] = ['（すべて）']
+            self.resource_group_combo.current(0)
+            self.resource_group_combo.config(state="disabled")
+
+    def get_scope(self) -> Optional[str]:
+        """
+        選択されたスコープを取得
+
+        Returns:
+            スコープ文字列（例: /subscriptions/xxx/resourceGroups/yyy）。選択されていない場合はNone
+        """
+        selected_sub = self.subscription_var.get()
+        
+        if selected_sub == '（すべて - 組み込みロールのみ）':
+            return None
+
+        # サブスクリプションIDを抽出
+        subscription_id = None
+        for sub in self.subscriptions:
+            name = sub.get('name', '')
+            sub_id = sub.get('id', '')
+            if f"{name} ({sub_id})" == selected_sub:
+                subscription_id = sub_id
+                break
+
+        if not subscription_id:
+            return None
+
+        # リソースグループが選択されているか確認
+        selected_rg = self.resource_group_var.get()
+        if selected_rg and selected_rg != '（すべて）':
+            # リソースグループのIDを取得
+            for rg in self.resource_groups:
+                if rg.get('name', '') == selected_rg:
+                    rg_id = rg.get('id', '')
+                    if rg_id:
+                        return rg_id
+            # IDが見つからない場合は手動で構築
+            return f"/subscriptions/{subscription_id}/resourceGroups/{selected_rg}"
+        else:
+            # サブスクリプションスコープ
+            return f"/subscriptions/{subscription_id}"
 
     def execute_search(self):
         """検索を実行"""
@@ -246,8 +389,9 @@ class RoleSearchFrame(ttk.LabelFrame):
             messagebox.showerror("エラー", "検索クエリを入力してください。")
             return
 
-        self.logger.info(f"ロール検索実行: {search_query}")
-        self.on_search(search_query)
+        scope = self.get_scope()
+        self.logger.info(f"ロール検索実行: query='{search_query}', scope='{scope}'")
+        self.on_search(search_query, scope)
 
 
 class ResultsFrame(ttk.LabelFrame):

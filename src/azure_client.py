@@ -272,10 +272,13 @@ class AzureClient:
             endpoint = "https://management.azure.com/providers/Microsoft.Authorization/roleDefinitions"
 
         # パラメータ
+        # スコープが指定されている場合はカスタムロールも含める、指定されていない場合は組み込みロールのみ
         params = {
             'api-version': '2022-04-01',
-            '$filter': "type eq 'BuiltInRole'"
         }
+        if not scope:
+            # スコープが指定されていない場合は組み込みロールのみ
+            params['$filter'] = "type eq 'BuiltInRole'"
 
         # ヘッダー
         headers = {
@@ -381,3 +384,70 @@ class AzureClient:
             raise AzureCLIError(f"ロール定義の解析に失敗: {e}")
         except subprocess.TimeoutExpired:
             raise AzureCLIError("ロール定義の取得がタイムアウトしました")
+
+    def get_subscriptions(self) -> List[Dict[str, Any]]:
+        """
+        サブスクリプション一覧を取得
+
+        Returns:
+            サブスクリプションのリスト
+        """
+        if not self.az_path:
+            raise AzureCLIError("Azure CLIパスが設定されていません")
+
+        self.logger.debug("サブスクリプション一覧を取得中...")
+
+        try:
+            result = subprocess.run(
+                [self.az_path, 'account', 'list', '--output', 'json'],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+
+            if result.returncode != 0:
+                raise AzureCLIError(f"サブスクリプション一覧の取得に失敗: {result.stderr}")
+
+            subscriptions = json.loads(result.stdout)
+            self.logger.info(f"サブスクリプション一覧を正常に取得しました: {len(subscriptions)}件")
+            return subscriptions
+
+        except json.JSONDecodeError as e:
+            raise AzureCLIError(f"サブスクリプション一覧の解析に失敗: {e}")
+        except subprocess.TimeoutExpired:
+            raise AzureCLIError("サブスクリプション一覧の取得がタイムアウトしました")
+
+    def get_resource_groups(self, subscription_id: str) -> List[Dict[str, Any]]:
+        """
+        リソースグループ一覧を取得
+
+        Args:
+            subscription_id: サブスクリプションID
+
+        Returns:
+            リソースグループのリスト
+        """
+        if not self.az_path:
+            raise AzureCLIError("Azure CLIパスが設定されていません")
+
+        self.logger.debug(f"リソースグループ一覧を取得中... (サブスクリプション: {subscription_id})")
+
+        try:
+            result = subprocess.run(
+                [self.az_path, 'group', 'list', '--subscription', subscription_id, '--output', 'json'],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+
+            if result.returncode != 0:
+                raise AzureCLIError(f"リソースグループ一覧の取得に失敗: {result.stderr}")
+
+            resource_groups = json.loads(result.stdout)
+            self.logger.info(f"リソースグループ一覧を正常に取得しました: {len(resource_groups)}件")
+            return resource_groups
+
+        except json.JSONDecodeError as e:
+            raise AzureCLIError(f"リソースグループ一覧の解析に失敗: {e}")
+        except subprocess.TimeoutExpired:
+            raise AzureCLIError("リソースグループ一覧の取得がタイムアウトしました")

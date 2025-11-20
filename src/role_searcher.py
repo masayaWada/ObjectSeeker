@@ -22,25 +22,31 @@ class RoleSearcher:
         self.logger = logger or Logger()
         self._role_cache: Optional[List[Dict[str, Any]]] = None
 
-    def _get_role_definitions(self) -> List[Dict[str, Any]]:
+    def _get_role_definitions(self, scope: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         ロール定義を取得（キャッシュ付き）
+
+        Args:
+            scope: スコープ（サブスクリプション、リソースグループなど）。Noneの場合は組み込みロールを取得
 
         Returns:
             ロール定義のリスト
         """
-        if self._role_cache is None:
-            self.logger.debug("ロール定義を取得中...")
+        # スコープが変更された場合はキャッシュをクリア
+        cache_key = scope or "builtin"
+        if self._role_cache is None or not hasattr(self, '_cached_scope') or self._cached_scope != cache_key:
+            self.logger.debug(f"ロール定義を取得中... (scope: {scope})")
             try:
-                # 組み込みロールを取得（スコープを指定しない）
-                self._role_cache = self.azure_client.get_role_definitions()
+                # ロール定義を取得（スコープを指定可能）
+                self._role_cache = self.azure_client.get_role_definitions(scope)
+                self._cached_scope = cache_key
             except AzureCLIError as e:
                 self.logger.error(f"ロール定義の取得エラー: {e}")
                 raise
 
         return self._role_cache
 
-    def search_roles(self, query: str, max_results: int = 100) -> List[Dict[str, Any]]:
+    def search_roles(self, query: str, max_results: int = 100, scope: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         ロールを検索
         
@@ -62,8 +68,8 @@ class RoleSearcher:
 
         try:
             # 統合済みのロール定義を取得
-            role_definitions = self._get_role_definitions()
-            self.logger.info(f"検索対象ロール数: {len(role_definitions)}件")
+            role_definitions = self._get_role_definitions(scope)
+            self.logger.info(f"検索対象ロール数: {len(role_definitions)}件 (scope: {scope})")
 
             query_lower = query.lower()
             query_original = query
@@ -212,4 +218,6 @@ class RoleSearcher:
     def clear_cache(self):
         """ロール定義のキャッシュをクリア"""
         self._role_cache = None
+        if hasattr(self, '_cached_scope'):
+            delattr(self, '_cached_scope')
         self.logger.debug("ロール定義のキャッシュをクリアしました")
