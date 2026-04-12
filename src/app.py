@@ -276,12 +276,17 @@ curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
             elif search_type == "application":
                 results = self.graph_searcher.search_applications(
                     query, max_results)
+            elif search_type == "principalId":
+                results = self.graph_searcher.lookup_by_principal_id(query)
             else:
                 raise ValueError(f"サポートされていない検索タイプ: {search_type}")
 
             # 結果をフォーマット
-            formatted_results = self.graph_searcher.format_search_results(
-                results, search_type)
+            if search_type == "principalId":
+                formatted_results = self.graph_searcher.format_directory_object_results(results)
+            else:
+                formatted_results = self.graph_searcher.format_search_results(
+                    results, search_type)
 
             # UI更新（メインスレッドで実行）
             self.root.after(0, lambda: self._search_success(formatted_results))
@@ -335,11 +340,18 @@ curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
         self.status_bar.set_error(error_msg)
         messagebox.showerror("検索エラー", error_msg)
 
-    def copy_result(self, value: str):
-        """検索結果をクリップボードにコピー（オブジェクトIDまたはロール名）"""
+    def copy_result(self, value: str, column_name: Optional[str] = None):
+        """検索結果をクリップボードにコピー（ダブルクリックされた列の値）"""
         try:
             pyperclip.copy(value)
-            if self.results_frame.result_type == "role":
+            if column_name:
+                self.status_bar.set_success(
+                    f"『{column_name}』をコピーしました: {value}")
+                messagebox.showinfo(
+                    "コピー完了",
+                    f"『{column_name}』をクリップボードにコピーしました:\n{value}"
+                )
+            elif self.results_frame.result_type == "role":
                 self.status_bar.set_success(f"ロール名をコピーしました: {value}")
                 messagebox.showinfo(
                     "コピー完了",

@@ -218,3 +218,7 @@ build/
 *.bak
 *.backup
 *.old
+
+# Claude
+.claude/
+Claude.md

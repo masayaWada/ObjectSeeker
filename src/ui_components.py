@@ -7,6 +7,7 @@ from tkinter import ttk, messagebox
 from typing import Callable, Optional, Dict, Any, List
 from .logger import Logger
 from .exceptions import UIError
+from .graph_api import is_valid_guid
 
 
 class AuthFrame(ttk.LabelFrame):
@@ -170,7 +171,7 @@ class SearchFrame(ttk.LabelFrame):
         self.search_type_var = tk.StringVar(value="user")
         search_type_combo = ttk.Combobox(
             self, textvariable=self.search_type_var,
-            values=["user", "group", "application"],
+            values=["user", "group", "application", "principalId"],
             state="readonly", width=15)
         search_type_combo.grid(row=0, column=1, sticky=tk.W, padx=(0, 5))
 
@@ -196,6 +197,14 @@ class SearchFrame(ttk.LabelFrame):
         if not search_query:
             messagebox.showerror("エラー", "検索クエリを入力してください。")
             return
+
+        if search_type == "principalId":
+            if not is_valid_guid(search_query):
+                messagebox.showerror(
+                    "エラー",
+                    "プリンシパルIDはGUID形式（例: 00000000-0000-0000-0000-000000000000）で入力してください。"
+                )
+                return
 
         self.logger.info(f"検索実行: {search_type} - {search_query}")
         self.on_search(search_type, search_query)
@@ -642,26 +651,53 @@ class ResultsFrame(ttk.LabelFrame):
                     item.get('type', '')
                 ))
 
+    def _resolve_clicked_cell(self, event) -> Optional[tuple]:
+        """
+        ダブルクリックされたセルの (列名, 値) を解決する
+
+        ヘッダ / セパレータ / 空行 / 範囲外 / 空値の場合は None を返す
+        """
+        try:
+            region = self.results_tree.identify_region(event.x, event.y)
+        except Exception:
+            return None
+        if region != "cell":
+            return None
+
+        row_id = self.results_tree.identify_row(event.y)
+        if not row_id:
+            return None
+
+        col_id = self.results_tree.identify_column(event.x)
+        if not col_id or not col_id.startswith("#"):
+            return None
+        try:
+            col_index = int(col_id.lstrip("#")) - 1
+        except ValueError:
+            return None
+
+        columns = self._get_columns()
+        if col_index < 0 or col_index >= len(columns):
+            return None
+
+        values = self.results_tree.item(row_id, "values")
+        if not values or col_index >= len(values):
+            return None
+
+        value = values[col_index]
+        if value in (None, ""):
+            return None
+
+        return columns[col_index], str(value)
+
     def handle_copy(self, event):
-        """コピー処理を実行"""
-        selection = self.results_tree.selection()
-        if not selection:
+        """ダブルクリックされた列の値をコピー"""
+        resolved = self._resolve_clicked_cell(event)
+        if resolved is None:
             return
-
-        item = self.results_tree.item(selection[0])
-
-        if self.result_type == "role":
-            # ロール名をコピー（最初の列）
-            role_name = item['values'][0] if item['values'] else ''
-            if role_name:
-                self.logger.info(f"ロール名をコピー: {role_name}")
-                self.on_copy(role_name)
-        else:
-            # オブジェクトIDをコピー（4番目の列）
-            object_id = item['values'][3] if len(item['values']) > 3 else ''
-            if object_id:
-                self.logger.info(f"オブジェクトIDをコピー: {object_id}")
-                self.on_copy(object_id)
+        column_name, value = resolved
+        self.logger.info(f"{column_name}をコピー: {value}")
+        self.on_copy(value, column_name)
 
 
 class StatusBar(ttk.Label):

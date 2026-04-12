@@ -2,10 +2,30 @@
 Azure Graph API 検索モジュール
 """
 
+import re
 import requests
 from typing import List, Dict, Any, Optional
 from .logger import Logger
 from .exceptions import AzureGraphAPIError
+
+GUID_PATTERN = re.compile(
+    r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-'
+    r'[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+)
+
+_ODATA_TYPE_MAP = {
+    '#microsoft.graph.user': 'user',
+    '#microsoft.graph.group': 'group',
+    '#microsoft.graph.servicePrincipal': 'servicePrincipal',
+    '#microsoft.graph.application': 'application',
+}
+
+
+def is_valid_guid(value: str) -> bool:
+    """GUID形式かどうかを検証"""
+    if not value:
+        return False
+    return bool(GUID_PATTERN.match(value.strip()))
 
 
 class GraphAPISearcher:
@@ -92,6 +112,79 @@ class GraphAPISearcher:
         filter_value = f"startswith(displayName,'{query}')"
 
         return self._search_objects(endpoint, filter_value, max_results, "application")
+
+    def lookup_by_principal_id(self, principal_id: str) -> List[Dict[str, Any]]:
+        """
+        プリンシパルID（オブジェクトID）から逆引き検索
+
+        Args:
+            principal_id: GUID形式のプリンシパルID（完全一致）
+
+        Returns:
+            該当オブジェクト（user/group/servicePrincipal/application）。該当なしは空リスト。
+        """
+        self.logger.debug(f"プリンシパルID逆引き: {principal_id}")
+
+        if not self.azure_client.is_authenticated():
+            raise AzureGraphAPIError("認証されていません")
+
+        if not is_valid_guid(principal_id):
+            raise AzureGraphAPIError(f"不正なGUID形式: {principal_id}")
+
+        principal_id = principal_id.strip()
+        endpoint = f"{self.base_url}/directoryObjects/{principal_id}"
+        headers = {
+            'Authorization': f'Bearer {self.azure_client.access_token}',
+            'Content-Type': 'application/json',
+        }
+
+        try:
+            self.logger.debug(f"Graph APIリクエスト: {endpoint}")
+            response = requests.get(endpoint, headers=headers, timeout=30)
+
+            if response.status_code == 404:
+                self.logger.info("プリンシパルID逆引き: 該当なし")
+                return []
+
+            response.raise_for_status()
+            data = response.json()
+            self.logger.info(
+                f"プリンシパルID逆引き完了: {data.get('@odata.type', 'unknown')}"
+            )
+            return [data]
+
+        except requests.exceptions.RequestException as e:
+            error_msg = f"Graph APIリクエストエラー: {e}"
+            self.logger.error(error_msg)
+            raise AzureGraphAPIError(error_msg)
+        except AzureGraphAPIError:
+            raise
+        except Exception as e:
+            error_msg = f"予期しないエラー: {e}"
+            self.logger.error(error_msg)
+            raise AzureGraphAPIError(error_msg)
+
+    def format_directory_object_results(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        `/directoryObjects/{id}` の結果をフォーマット（`@odata.type` から種別を判定）
+        """
+        formatted = []
+        for item in results:
+            odata_type = item.get('@odata.type', '')
+            object_type = _ODATA_TYPE_MAP.get(odata_type, odata_type.replace('#microsoft.graph.', '') or 'unknown')
+            name = item.get('displayName', '') or ''
+            email = item.get('mail', '') or item.get('userPrincipalName', '') or ''
+            object_id = item.get('id', '') or ''
+            display_name = name if name else email
+
+            formatted.append({
+                'name': name,
+                'display_name': display_name,
+                'email': email,
+                'object_id': object_id,
+                'type': object_type,
+            })
+        return formatted
 
     def _search_objects(self, endpoint: str, filter_value: str, max_results: int, object_type: str) -> List[Dict[str, Any]]:
         """
