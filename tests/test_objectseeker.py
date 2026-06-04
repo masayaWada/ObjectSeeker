@@ -358,6 +358,99 @@ class TestGraphAPISearcherPrincipalIdLookup(unittest.TestCase):
             self.searcher.lookup_by_principal_id(self.VALID_GUID)
 
 
+class TestGraphAPISearcherCheckExistence(unittest.TestCase):
+    """check_existence / _classify_match のテスト"""
+
+    def setUp(self):
+        self.logger = Logger("TestLogger")
+        self.azure_client = Mock()
+        self.azure_client.is_authenticated.return_value = True
+        self.azure_client.access_token = 'test-token'
+        self.searcher = GraphAPISearcher(self.azure_client, self.logger)
+
+    # --- _classify_match ---
+
+    def test_classify_match_none_when_empty(self):
+        self.assertIsNone(self.searcher._classify_match("X", []))
+
+    def test_classify_match_exact(self):
+        results = [{'displayName': 'Group A'}, {'displayName': 'Group AB'}]
+        self.assertEqual(self.searcher._classify_match("Group A", results), 'exact')
+
+    def test_classify_match_exact_with_whitespace(self):
+        results = [{'displayName': '  Group A  '}]
+        self.assertEqual(self.searcher._classify_match(" Group A ", results), 'exact')
+
+    def test_classify_match_partial(self):
+        results = [{'displayName': 'Group AB'}, {'displayName': 'Group AC'}]
+        self.assertEqual(self.searcher._classify_match("Group A", results), 'partial')
+
+    # --- check_existence ---
+
+    def test_check_existence_empty_name(self):
+        result = self.searcher.check_existence("   ")
+        self.assertEqual(result['status'], 'none')
+        self.assertEqual(result['symbol'], '✕')
+        self.assertIsNone(result['object_type'])
+
+    def test_check_existence_group_exact(self):
+        self.searcher.search_groups = Mock(
+            return_value=[{'displayName': 'My Group'}])
+        self.searcher.search_applications = Mock(return_value=[])
+        result = self.searcher.check_existence("My Group")
+        self.assertEqual(result['symbol'], '〇')
+        self.assertEqual(result['status'], 'exact')
+        self.assertEqual(result['object_type'], 'group')
+        # アプリ検索は呼ばれない
+        self.searcher.search_applications.assert_not_called()
+
+    def test_check_existence_group_partial(self):
+        self.searcher.search_groups = Mock(
+            return_value=[{'displayName': 'My Group 2'}])
+        self.searcher.search_applications = Mock(return_value=[])
+        result = self.searcher.check_existence("My Group")
+        self.assertEqual(result['symbol'], '△')
+        self.assertEqual(result['status'], 'partial')
+        self.assertEqual(result['object_type'], 'group')
+        self.searcher.search_applications.assert_not_called()
+
+    def test_check_existence_application_exact(self):
+        self.searcher.search_groups = Mock(return_value=[])
+        self.searcher.search_applications = Mock(
+            return_value=[{'displayName': 'My App'}])
+        result = self.searcher.check_existence("My App")
+        self.assertEqual(result['symbol'], '〇')
+        self.assertEqual(result['status'], 'exact')
+        self.assertEqual(result['object_type'], 'application')
+
+    def test_check_existence_application_partial(self):
+        self.searcher.search_groups = Mock(return_value=[])
+        self.searcher.search_applications = Mock(
+            return_value=[{'displayName': 'My App Service'}])
+        result = self.searcher.check_existence("My App")
+        self.assertEqual(result['symbol'], '△')
+        self.assertEqual(result['status'], 'partial')
+        self.assertEqual(result['object_type'], 'application')
+
+    def test_check_existence_not_found(self):
+        self.searcher.search_groups = Mock(return_value=[])
+        self.searcher.search_applications = Mock(return_value=[])
+        result = self.searcher.check_existence("Nonexistent")
+        self.assertEqual(result['symbol'], '✕')
+        self.assertEqual(result['status'], 'none')
+        self.assertIsNone(result['object_type'])
+
+    def test_check_existence_group_takes_precedence(self):
+        # グループでヒットすればアプリ検索しない（自動判定の順序確認）
+        self.searcher.search_groups = Mock(
+            return_value=[{'displayName': 'Shared'}])
+        self.searcher.search_applications = Mock(
+            return_value=[{'displayName': 'Shared'}])
+        result = self.searcher.check_existence("Shared")
+        self.assertEqual(result['object_type'], 'group')
+        self.searcher.search_applications.assert_not_called()
+
+
 class TestResultsFrameHandleCopy(unittest.TestCase):
     """ResultsFrame のクリック列ベースコピー処理のテスト"""
 
