@@ -101,7 +101,8 @@ class ObjectSeekerApp:
 
         # タブ付き検索フレーム
         self.tabbed_search_frame = TabbedSearchFrame(
-            main_frame, self.search_objects, self.search_roles, self.azure_client, self.logger, self.status_bar)
+            main_frame, self.search_objects, self.search_roles, self.azure_client, self.logger, self.status_bar,
+            on_bulk_search=self.search_bulk)
         self.tabbed_search_frame.grid(
             row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
 
@@ -260,6 +261,64 @@ curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
         )
         search_thread.daemon = True
         search_thread.start()
+
+    def search_bulk(self, names):
+        """グループ名・アプリケーション名の一括存在確認を実行"""
+        if not self.azure_client.is_authenticated():
+            messagebox.showerror("エラー", "まず認証を完了してください。")
+            return
+
+        bulk_frame = self.tabbed_search_frame.bulk_search_frame
+        bulk_frame.set_searching(True)
+        bulk_frame.clear_results()
+        self.status_bar.set_status("一括検索中...")
+
+        # 別スレッドで検索を実行
+        search_thread = threading.Thread(
+            target=self._search_bulk_thread,
+            args=(names,)
+        )
+        search_thread.daemon = True
+        search_thread.start()
+
+    def _search_bulk_thread(self, names):
+        """一括検索処理（別スレッド）"""
+        bulk_frame = self.tabbed_search_frame.bulk_search_frame
+        fullwidth_space = bulk_frame.FULLWIDTH_SPACE
+        type_labels = {'group': 'グループ', 'application': 'アプリケーション'}
+
+        try:
+            total = len(names)
+            for idx, name in enumerate(names, start=1):
+                try:
+                    result = self.graph_searcher.check_existence(name)
+                    line = f"{result['name']}{fullwidth_space}{result['symbol']}"
+                    type_label = type_labels.get(result['object_type'])
+                    if type_label:
+                        line += f"（{type_label}）"
+                except AzureGraphAPIError as e:
+                    line = f"{name}{fullwidth_space}エラー: {e}"
+                except Exception as e:
+                    line = f"{name}{fullwidth_space}エラー: {e}"
+
+                self.root.after(
+                    0, lambda l=line: bulk_frame.append_result_line(l))
+                self.root.after(
+                    0, lambda i=idx, t=total: self.status_bar.set_status(
+                        f"一括検索中... ({i}/{t})"))
+
+            self.root.after(0, lambda: self._bulk_search_done(total))
+
+        except Exception as e:
+            error_msg = f"一括検索エラー: {e}"
+            self.root.after(0, lambda: self.status_bar.set_error(error_msg))
+            self.root.after(0, lambda: bulk_frame.set_searching(False))
+
+    def _bulk_search_done(self, total):
+        """一括検索完了時の処理"""
+        bulk_frame = self.tabbed_search_frame.bulk_search_frame
+        bulk_frame.set_searching(False)
+        self.status_bar.set_success(f"一括検索完了: {total}件")
 
     def _search_object_thread(self, search_type: str, query: str):
         """オブジェクト検索処理（別スレッド）"""

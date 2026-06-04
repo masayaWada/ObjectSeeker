@@ -113,6 +113,77 @@ class GraphAPISearcher:
 
         return self._search_objects(endpoint, filter_value, max_results, "application")
 
+    def _classify_match(self, name: str, results: List[Dict[str, Any]]) -> Optional[str]:
+        """
+        検索結果と検索名を比較して一致度を判定する
+
+        Args:
+            name: 検索名（完全一致の判定対象）
+            results: 検索結果のリスト
+
+        Returns:
+            'exact'（displayNameが完全一致）/ 'partial'（部分一致のみ）/ None（結果なし）
+        """
+        if not results:
+            return None
+
+        name_norm = name.strip()
+        for item in results:
+            if (item.get('displayName', '') or '').strip() == name_norm:
+                return 'exact'
+        return 'partial'
+
+    def check_existence(self, name: str, max_results: int = 50) -> Dict[str, Any]:
+        """
+        名前をグループ→アプリケーションの順で検索し、存在の有無と一致度を判定する
+
+        グループとして検索してヒットすればグループ、ヒットしなければ
+        アプリケーションとして検索し、それでもヒットしなければ存在なしと判定する。
+
+        Args:
+            name: グループ名またはアプリケーション名
+            max_results: 各検索の最大結果数
+
+        Returns:
+            {
+                'name': 検索した名前,
+                'status': 'exact' | 'partial' | 'none',
+                'symbol': '〇' | '△' | '✕',
+                'object_type': 'group' | 'application' | None,
+            }
+        """
+        name_norm = name.strip()
+        result = {
+            'name': name_norm,
+            'status': 'none',
+            'symbol': '✕',
+            'object_type': None,
+        }
+
+        if not name_norm:
+            return result
+
+        # グループとして検索
+        group_results = self.search_groups(name_norm, max_results)
+        match = self._classify_match(name_norm, group_results)
+        if match:
+            result['object_type'] = 'group'
+            result['status'] = match
+            result['symbol'] = '〇' if match == 'exact' else '△'
+            return result
+
+        # ヒットしなければアプリケーションとして検索
+        app_results = self.search_applications(name_norm, max_results)
+        match = self._classify_match(name_norm, app_results)
+        if match:
+            result['object_type'] = 'application'
+            result['status'] = match
+            result['symbol'] = '〇' if match == 'exact' else '△'
+            return result
+
+        # どちらにもヒットしなければ存在なし
+        return result
+
     def lookup_by_principal_id(self, principal_id: str) -> List[Dict[str, Any]]:
         """
         プリンシパルID（オブジェクトID）から逆引き検索

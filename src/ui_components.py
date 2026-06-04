@@ -97,7 +97,7 @@ class AuthFrame(ttk.LabelFrame):
 class TabbedSearchFrame(ttk.Frame):
     """タブ付き検索フレーム"""
 
-    def __init__(self, parent, on_object_search: Callable, on_role_search: Callable, azure_client=None, logger: Optional[Logger] = None, status_bar=None):
+    def __init__(self, parent, on_object_search: Callable, on_role_search: Callable, azure_client=None, logger: Optional[Logger] = None, status_bar=None, on_bulk_search: Optional[Callable] = None):
         """
         タブ付き検索フレームを初期化
 
@@ -108,10 +108,12 @@ class TabbedSearchFrame(ttk.Frame):
             azure_client: AzureClientインスタンス
             logger: ロガーインスタンス
             status_bar: ステータスバーインスタンス
+            on_bulk_search: 一括検索実行時のコールバック
         """
         super().__init__(parent)
         self.on_object_search = on_object_search
         self.on_role_search = on_role_search
+        self.on_bulk_search = on_bulk_search
         self.azure_client = azure_client
         self.logger = logger or Logger()
         self.status_bar = status_bar
@@ -136,6 +138,11 @@ class TabbedSearchFrame(ttk.Frame):
         self.role_search_frame = RoleSearchFrame(
             self.notebook, self.on_role_search, self.azure_client, self.logger, self.status_bar)
         self.notebook.add(self.role_search_frame, text="ロール名検索")
+
+        # 一括検索タブ
+        self.bulk_search_frame = BulkSearchFrame(
+            self.notebook, self.on_bulk_search, self.logger)
+        self.notebook.add(self.bulk_search_frame, text="一括検索")
 
     def refresh_role_search_subscriptions(self):
         """ロール検索フレームのサブスクリプション一覧を更新"""
@@ -535,6 +542,125 @@ class RoleSearchFrame(ttk.LabelFrame):
                 lambda: self.resource_group_combo.event_generate('<Down>'))
         except:
             pass
+
+
+class BulkSearchFrame(ttk.LabelFrame):
+    """一括検索フレーム
+
+    グループ名・アプリケーション名を複数まとめて入力し、存在の有無を一括で確認する。
+    """
+
+    # 全角スペース（入力名と結果の区切り）
+    FULLWIDTH_SPACE = "　"
+
+    def __init__(self, parent, on_search: Optional[Callable] = None, logger: Optional[Logger] = None):
+        """
+        一括検索フレームを初期化
+
+        Args:
+            parent: 親ウィジェット
+            on_search: 一括検索実行時のコールバック（names: List[str] を受け取る）
+            logger: ロガーインスタンス
+        """
+        super().__init__(parent, text="一括検索", padding="5")
+        self.on_search = on_search
+        self.logger = logger or Logger()
+
+        self.setup_ui()
+
+    def setup_ui(self):
+        """UIをセットアップ"""
+        self.columnconfigure(0, weight=1)
+
+        row = 0
+
+        # 説明ラベル
+        info_label = ttk.Label(
+            self,
+            text=(
+                "グループ名・アプリケーション名を1行に1つずつ入力し、「チェック」を押してください。\n"
+                "判定: 完全一致=〇 / 部分一致=△ / 存在なし=✕"
+                "（グループ→アプリケーションの順で自動判定します）"
+            ),
+            foreground="gray",
+            justify=tk.LEFT
+        )
+        info_label.grid(row=row, column=0, columnspan=2,
+                        sticky=tk.W, pady=(0, 5))
+
+        # 入力ラベル
+        row += 1
+        ttk.Label(self, text="検索名（複数可）:").grid(
+            row=row, column=0, sticky=tk.W, padx=(0, 5))
+
+        # 入力テキスト
+        row += 1
+        self.input_text = tk.Text(self, height=6, width=50)
+        self.input_text.grid(row=row, column=0, sticky=(
+            tk.W, tk.E), padx=(0, 5), pady=(0, 5))
+        input_scroll = ttk.Scrollbar(
+            self, orient=tk.VERTICAL, command=self.input_text.yview)
+        self.input_text.configure(yscrollcommand=input_scroll.set)
+        input_scroll.grid(row=row, column=1, sticky=(tk.N, tk.S))
+
+        # チェックボタン
+        row += 1
+        self.check_button = ttk.Button(
+            self, text="チェック", command=self.execute_search)
+        self.check_button.grid(row=row, column=0, sticky=tk.W, pady=(0, 5))
+
+        # 結果ラベル
+        row += 1
+        ttk.Label(self, text="結果:").grid(
+            row=row, column=0, sticky=tk.W, padx=(0, 5))
+
+        # 結果テキスト（読み取り専用）
+        row += 1
+        self.result_text = tk.Text(
+            self, height=8, width=50, state="disabled")
+        self.result_text.grid(row=row, column=0, sticky=(
+            tk.W, tk.E), padx=(0, 5), pady=(0, 5))
+        result_scroll = ttk.Scrollbar(
+            self, orient=tk.VERTICAL, command=self.result_text.yview)
+        self.result_text.configure(yscrollcommand=result_scroll.set)
+        result_scroll.grid(row=row, column=1, sticky=(tk.N, tk.S))
+
+    def execute_search(self):
+        """一括検索を実行"""
+        names = self.get_names()
+
+        if not names:
+            messagebox.showerror("エラー", "検索名を1つ以上入力してください。")
+            return
+
+        if not self.on_search:
+            return
+
+        self.logger.info(f"一括検索実行: {len(names)}件")
+        self.on_search(names)
+
+    def get_names(self) -> List[str]:
+        """入力テキストから検索名のリストを取得（空行は除外）"""
+        raw = self.input_text.get("1.0", tk.END)
+        return [line.strip() for line in raw.splitlines() if line.strip()]
+
+    def set_searching(self, searching: bool):
+        """検索中の状態を設定（ボタンの有効・無効を切り替え）"""
+        self.check_button.configure(
+            state="disabled" if searching else "normal")
+
+    def clear_results(self):
+        """結果表示をクリア"""
+        self.result_text.configure(state="normal")
+        self.result_text.delete("1.0", tk.END)
+        self.result_text.configure(state="disabled")
+
+    def append_result_line(self, line: str):
+        """結果を1行追加"""
+        self.result_text.configure(state="normal")
+        self.result_text.insert(tk.END, line + "\n")
+        self.result_text.see(tk.END)
+        self.result_text.configure(state="disabled")
 
 
 class ResultsFrame(ttk.LabelFrame):
